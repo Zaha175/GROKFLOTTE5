@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Grok Fleet Assault</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: Arial, sans-serif;
+        }
+        canvas {
+            border: 2px solid #ffd700;
+            background: url('https://cdn.pixabay.com/photo/2017/08/30/01/05/milky-way-2695569_1280.jpg');
+            background-size: cover;
+        }
+        #score { position: absolute; top: 10px; left: 10px; color: #ffd700; font-size: 1.5em; text-shadow: 1px 1px 3px #000; }
+        #lives { position: absolute; top: 40px; left: 10px; color: #00ffff; font-size: 1.5em; text-shadow: 1px 1px 3px #000; }
+        #game-over { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #ff4500; font-size: 2em; text-shadow: 2px 2px 4px #000; display: none; text-align: center; }
+    </style>
+</head>
+<body>
+    <div id="score">Score: 0</div>
+    <div id="lives">Lives: 3</div>
+    <div id="game-over">Game Over!<br>Score: <span id="final-score">0</span><br>Klick zum Neustart</div>
+    <canvas id="gameCanvas" width="1200" height="800"></canvas> <!-- Größerer Container: 1200x800 -->
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreDisplay = document.getElementById('score');
+        const livesDisplay = document.getElementById('lives');
+        const gameOverDisplay = document.getElementById('game-over');
+        const finalScoreDisplay = document.getElementById('final-score');
+
+        const playerShootSound = new Audio('https://raw.githubusercontent.com/Zaha175/MERHFACHSITUATIONSTEST/main/tONHOCH.mp3');
+        const grokShootSound = new Audio('https://freesound.org/data/previews/156/156155_256 shrinking-laser.mp3'); // Beispiel-URL, ggf. anpassen
+        const explosionSound = new Audio('https://raw.githubusercontent.com/Zaha175/MERHFACHSITUATIONSTEST/main/TONTIEF.mp3');
+
+        let score = 0;
+        let spaceship = { x: canvas.width / 2, y: canvas.height - 50, width: 40, height: 40, lives: 3, fireRate: 5 };
+        let bullets = [];
+        let grokBullets = [];
+        let asteroids = [];
+        let explosions = [];
+        let grokFleet = [
+            { x: canvas.width / 4, y: 50, width: 40, height: 40, dx: 2, shootTimer: 0, alive: true },
+            { x: canvas.width / 2, y: 50, width: 40, height: 40, dx: 2, shootTimer: 0, alive: true },
+            { x: 3 * canvas.width / 4, y: 50, width: 40, height: 40, dx: 2, shootTimer: 0, alive: true }
+        ];
+        let gameActive = true;
+        let mouseX = spaceship.x;
+        let lastShotTime = 0;
+
+        // Raumschiff zeichnen
+        function drawSpaceship() {
+            ctx.fillStyle = '#00ffff';
+            ctx.beginPath();
+            ctx.moveTo(spaceship.x, spaceship.y - spaceship.height / 2);
+            ctx.lineTo(spaceship.x - spaceship.width / 2, spaceship.y + spaceship.height / 2);
+            ctx.lineTo(spaceship.x + spaceship.width / 2, spaceship.y + spaceship.height / 2);
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        // Grok-Flotte zeichnen
+        function drawGrokFleet() {
+            ctx.fillStyle = '#ff00ff';
+            grokFleet.forEach(grok => {
+                if (grok.alive) {
+                    ctx.beginPath();
+                    ctx.moveTo(grok.x, grok.y - grok.height / 2);
+                    ctx.lineTo(grok.x - grok.width / 2, grok.y + grok.height / 2);
+                    ctx.lineTo(grok.x + grok.width / 2, grok.y + grok.height / 2);
+                    ctx.closePath();
+                    ctx.fill();
+                }
+            });
+        }
+
+        // Schüsse zeichnen
+        function drawBullets() {
+            ctx.fillStyle = '#ff4500';
+            bullets.forEach(bullet => {
+                ctx.beginPath();
+                ctx.arc(bullet.x, bullet.y, 5, 0, Math.PI * 2);
+                ctx.fill();
+            });
+            ctx.fillStyle = '#00ff00';
+            grokBullets.forEach(bullet => {
+                ctx.beginPath();
+                ctx.arc(bullet.x, bullet.y, 5, 0, Math.PI * 2);
+                ctx.fill();
+            });
+        }
+
+        // Asteroiden zeichnen
+        function drawAsteroids() {
+            asteroids.forEach(asteroid => {
+                ctx.fillStyle = asteroid.isTree ? '#228B22' : '#808080';
+                ctx.beginPath();
+                ctx.arc(asteroid.x, asteroid.y, asteroid.radius, 0, Math.PI * 2);
+                ctx.fill();
+            });
+        }
+
+        // Explosionen/Partikel zeichnen
+        function drawExplosions() {
+            explosions.forEach((explosion, index) => {
+                ctx.fillStyle = `rgba(255, 69, 0, ${explosion.alpha})`;
+                ctx.beginPath();
+                ctx.arc(explosion.x, explosion.y, explosion.radius, 0, Math.PI * 2);
+                ctx.fill();
+                explosion.radius += 2;
+                explosion.alpha -= 0.05;
+                if (explosion.alpha <= 0) explosions.splice(index, 1);
+            });
+        }
+
+        // Asteroiden spawnen
+        function spawnAsteroid() {
+            const radius = Math.random() * 20 + 10;
+            const isTree = Math.random() < 0.2;
+            const x = Math.random() * canvas.width;
+            const y = -radius;
+            const speed = Math.random() * 2 + 1;
+            asteroids.push({ x, y, radius, dy: speed, isTree });
+        }
+
+        // Grok-Schiff regenerieren
+        function regenerateGrokShip(grok) {
+            if (!grok.alive && Math.random() < 0.01) { // 1% Chance pro Frame
+                grok.alive = true;
+                grok.x = Math.random() * canvas.width;
+                grok.y = 50;
+                grok.shootTimer = 0;
+            }
+        }
+
+        // Kollisionserkennung
+        function checkCollision(obj1, obj2) {
+            const dx = obj1.x - obj2.x;
+            const dy = obj1.y - obj2.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            return distance < (obj1.radius || 5) + (obj2.radius || spaceship.width / 2 || obj2.width / 2);
+        }
+
+        // Power-Ups
+        function applyPowerUp() {
+            const powerUps = [
+                () => spaceship.lives = Math.min(spaceship.lives + 1, 5),
+                () => spaceship.fireRate = Math.min(spaceship.fireRate + 2, 10)
+            ];
+            powerUps[Math.floor(Math.random() * powerUps.length)]();
+            livesDisplay.textContent = `Lives: ${spaceship.lives}`;
+        }
+
+        // Spiel-Logik
+        function update() {
+            if (!gameActive) return;
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Raumschiff
+            spaceship.x += (mouseX - spaceship.x) * 0.1;
+            spaceship.x = Math.max(spaceship.width / 2, Math.min(canvas.width - spaceship.width / 2, spaceship.x));
+            drawSpaceship();
+
+            // Schüsse (Spieler)
+            bullets.forEach((bullet, bIndex) => {
+                bullet.y -= spaceship.fireRate;
+                if (bullet.y < 0) bullets.splice(bIndex, 1);
+                asteroids.forEach((asteroid, aIndex) => {
+                    if (checkCollision(bullet, asteroid)) {
+                        bullets.splice(bIndex, 1);
+                        explosions.push({ x: asteroid.x, y: asteroid.y, radius: 10, alpha: 1 });
+                        if (asteroid.isTree) applyPowerUp();
+                        asteroids.splice(aIndex, 1);
+                        score += asteroid.isTree ? 20 : 10;
+                        explosionSound.currentTime = 0;
+                        explosionSound.play().catch(err => console.error('Explosion sound error:', err));
+                        scoreDisplay.textContent = `Score: ${score}`;
+                    }
+                });
+                grokFleet.forEach((grok, gIndex) => {
+                    if (grok.alive && checkCollision(bullet, grok)) {
+                        bullets.splice(bIndex, 1);
+                        grok.alive = false;
+                        explosions.push({ x: grok.x, y: grok.y, radius: 15, alpha: 1 }); // Größere Explosion
+                        for (let i = 0; i < 5; i++) { // Partikel-Effekt
+                            explosions.push({
+                                x: grok.x + (Math.random() - 0.5) * 20,
+                                y: grok.y + (Math.random() - 0.5) * 20,
+                                radius: Math.random() * 5 + 2,
+                                alpha: 1
+                            });
+                        }
+                        score += 50; // Mehr Punkte für Grok-Schiff
+                        explosionSound.currentTime = 0;
+                        explosionSound.play().catch(err => console.error('Explosion sound error:', err));
+                        scoreDisplay.textContent = `Score: ${score}`;
+                    }
+                });
+            });
+
+            // Grok-Flotte Bewegung und Schüsse
+            grokFleet.forEach(grok => {
+                if (grok.alive) {
+                    grok.x += grok.dx;
+                    if (grok.x < grok.width / 2 || grok.x > canvas.width - grok.width / 2) grok.dx = -grok.dx; // Links/Rechts abprallen
+                    grok.shootTimer++;
+                    if (grok.shootTimer > 50) {
+                        grokBullets.push({ x: grok.x, y: grok.y + grok.height / 2 });
+                        grokShootSound.currentTime = 0;
+                        grokShootSound.play().catch(err => console.error('Grok shoot sound error:', err));
+                        grok.shootTimer = 0;
+                    }
+                } else {
+                    regenerateGrokShip(grok); // Regenerieren
+                }
+            });
+            grokBullets.forEach((bullet, bIndex) => {
+                bullet.y += 5;
+                if (bullet.y > canvas.height) grokBullets.splice(bIndex, 1);
+                if (checkCollision(bullet, spaceship)) {
+                    grokBullets.splice(bIndex, 1);
+                    spaceship.lives--;
+                    explosions.push({ x: spaceship.x, y: spaceship.y, radius: 10, alpha: 1 });
+                    explosionSound.currentTime = 0;
+                    explosionSound.play().catch(err => console.error('Explosion sound error:', err));
+                    livesDisplay.textContent = `Lives: ${spaceship.lives}`;
+                    if (spaceship.lives <= 0) endGame();
+                }
+            });
+            drawBullets();
+            drawGrokFleet();
+
+            // Asteroiden
+            asteroids.forEach((asteroid, index) => {
+                asteroid.y += asteroid.dy;
+                if (asteroid.y > canvas.height + asteroid.radius) asteroids.splice(index, 1);
+                if (checkCollision(spaceship, asteroid)) {
+                    asteroids.splice(index, 1);
+                    spaceship.lives--;
+                    explosions.push({ x: spaceship.x, y: spaceship.y, radius: 10, alpha: 1 });
+                    explosionSound.currentTime = 0;
+                    explosionSound.play().catch(err => console.error('Explosion sound error:', err));
+                    livesDisplay.textContent = `Lives: ${spaceship.lives}`;
+                    if (spaceship.lives <= 0) endGame();
+                }
+            });
+            drawAsteroids();
+
+            // Explosionen
+            drawExplosions();
+
+            // Asteroiden spawnen
+            if (Math.random() < 0.02) spawnAsteroid();
+
+            requestAnimationFrame(update);
+        }
+
+        // Spielende
+        function endGame() {
+            gameActive = false;
+            gameOverDisplay.style.display = 'block';
+            finalScoreDisplay.textContent = score;
+        }
+
+        // Neustart
+        canvas.addEventListener('click', (e) => {
+            if (!gameActive) {
+                gameActive = true;
+                score = 0;
+                spaceship.lives = 3;
+                spaceship.fireRate = 5;
+                bullets = [];
+                grokBullets = [];
+                asteroids = [];
+                explosions = [];
+                grokFleet = [
+                    { x: canvas.width / 4, y: 50, width: 40, height: 40, dx: 2, shootTimer: 0, alive: true },
+                    { x: canvas.width / 2, y: 50, width: 40, height: 40, dx: 2, shootTimer: 0, alive: true },
+                    { x: 3 * canvas.width / 4, y: 50, width: 40, height: 40, dx: 2, shootTimer: 0, alive: true }
+                ];
+                scoreDisplay.textContent = `Score: ${score}`;
+                livesDisplay.textContent = `Lives: ${spaceship.lives}`;
+                gameOverDisplay.style.display = 'none';
+                update();
+            }
+        });
+
+        // Mausbewegung
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            mouseX = e.clientX - rect.left;
+        });
+
+        // Schießen
+        canvas.addEventListener('click', () => {
+            if (gameActive) {
+                const now = Date.now();
+                if (now - lastShotTime > 1000 / spaceship.fireRate) {
+                    bullets.push({ x: spaceship.x, y: spaceship.y - spaceship.height / 2 });
+                    playerShootSound.currentTime = 0;
+                    playerShootSound.play().catch(err => console.error('Player shoot sound error:', err));
+                    lastShotTime = now;
+                }
+            }
+        });
+
+        // Spiel starten
+        update();
+    </script>
+</body>
+</html>
